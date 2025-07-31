@@ -1,0 +1,27 @@
+{
+  "inputs": [],
+  "servers": {
+    "mcp-obsidian": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-obsidian"
+      ],
+      "env": {
+        "OBSIDIAN_API_KEY": "2b172b0538da2a5330141b6c0f22b1aca470032438859efbcc092f6c4af44737",
+        "OBSIDIAN_HOST": "https://127.0.0.1",
+        "OBSIDIAN_PORT": "27124"
+      }
+    },
+    "ebook-mcp":{
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "C:\\Users\\AKazlou\\mcp\\ebook-mcp\\src\\ebook_mcp\\",
+        "run",
+        "main.py"
+      ]
+    }
+  }
+}
