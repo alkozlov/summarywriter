@@ -1,4 +1,27 @@
-openai
 PyPDF2
 mcp[cli]
 dotenv
+
+fastmcp==2.10.6
+langchain==0.3.27
+langchain-mcp-adapters==0.1.9
+langchain-openai==0.3.28
+langgraph==0.6.2
+mcp==1.12.2
+openai==1.98.0
+pydantic-settings==2.10.1
+python-dotenv==1.1.1
+uvicorn==0.35.0
+faker==37.5.3
+
+# fastmcp==2.10.6
+# langchain==0.3.26
+# langchain-mcp-adapters==0.1.9
+# langchain-openai==0.3.28
+# langgraph==0.5.3
+# mcp==1.12.0
+# openai==1.97.0
+# pydantic-settings==2.10.1
+# python-dotenv==1.1.1
+# uvicorn==0.35.0
+# faker==37.4.2
