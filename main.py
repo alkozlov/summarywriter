@@ -1,96 +1,242 @@
 import argparse
-import asyncio
-
-from mcp import ClientSession, StdioServerParameters, types
-from mcp.client.stdio import stdio_client
-
-from agents.summarize import summarize_text
-from agents.format_md import format_to_markdown
-from agents.write_obsidian import write_markdown_file
-
-server_params = StdioServerParameters(
-    command="uv",  # Using uv to run the server
-    args=["--directory", "C:\\Users\\AKazlou\\mcp\\ebook-mcp\\src\\ebook_mcp\\", "run", "main.py"]
+from typing import Annotated, Sequence, TypedDict
+from dotenv import load_dotenv
+from langchain_core.messages import (
+    BaseMessage,
+    SystemMessage,
+    HumanMessage,
+    AIMessage,
 )
+from langchain_openai import ChatOpenAI, OpenAI
+from langchain_core.tools import tool
+from langgraph.graph.message import add_messages
+from langgraph.graph import StateGraph, END, START
+from langgraph.prebuilt import create_react_agent
+from langchain_mcp_adapters.client import MultiServerMCPClient
+import os
+import asyncio
+import openai
 
 rules_path = "rules/rules.md"
 style_path = "rules/style.md"
 
-async def extract_text_via_mcp(pdf_path, start_page, end_page):
-    async with stdio_client(server_params) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            # Initialize the connection
-            await session.initialize()
+load_dotenv()
+custom_tools = []
 
-            markdown_chunks = []
-            for page in range(start_page, end_page + 1):
-                result = await session.call_tool("get_pdf_page_markdown", arguments={
-                    "pdf_path": pdf_path,
-                    "page_number": page
-                })
-                for content in result.content:
-                    if isinstance(content, types.TextContent):
-                        #print(f"Text: {content.text}")
-                        markdown_chunks.append(content.text)
-            
-            return "\n\n".join(markdown_chunks)
+async def get_all_tools():
+    """Получение всех инструментов: ваших + MCP"""
+    # Настройка MCP клиента
+    mcp_client = MultiServerMCPClient(
+        {
+            "filesystem": {
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+            },
+            "context7": {
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@upstash/context7-mcp"],
+            },
+            "ebook-mcp": {
+                "transport": "stdio",
+                "command": "uv",
+                "args": [
+                    "--directory",
+                    "C:\\Users\\AKazlou\\mcp\\ebook-mcp\\src\\ebook_mcp\\",
+                    "run",
+                    "main.py"
+                ]
+            },
+        }
+    )
 
+    # Получаем MCP инструменты
+    mcp_tools = await mcp_client.get_tools()
 
-# def generate_summary(text, rules_path):
-#     with open(rules_path, 'r', encoding='utf-8') as f:
-#         rules = f.read()
+    # Объединяем ваши инструменты с MCP инструментами
+    return custom_tools + mcp_tools
 
-#     response = openai.chat.completions.create(
-#         model="gpt-4o-mini",  # или другой доступный тебе
-#         messages=[
-#             {"role": "system", "content": "Ты помощник, создающий конспекты по правилам."},
-#             {"role": "user", "content": f"Вот правила:\n\n{rules}"},
-#             {"role": "user", "content": f"Вот текст главы:\n\n{text}"}
-#         ],
-#         temperature=0.4
-#     )
-#     return response.choices[0].message.content
+async def run_query(agent, query: str):
+    """Выполняет один запрос к агенту с читаемым выводом"""
+    print(f"🎯 Запрос: {query}")
+    
+    step_counter = 0
+    processed_messages = set()  # Для избежания дублирования
+    
+    try:
+        async for event in agent.astream(
+            {"messages": [{"role": "user", "content": query}]},
+            config={"recursion_limit": 50},
+            stream_mode="values",
+        ):
+            if "messages" in event and event["messages"]:
+                messages = event["messages"]
+                
+                # Обрабатываем только новые сообщения
+                for msg in messages:
+                    msg_id = getattr(msg, 'id', str(id(msg)))
+                    if msg_id in processed_messages:
+                        continue
+                    processed_messages.add(msg_id)
+                    
+                    # Получаем тип сообщения
+                    msg_type = getattr(msg, 'type', 'unknown')
+                    content = getattr(msg, 'content', '')
+                    
+                    # 1. Сообщения от пользователя
+                    if msg_type == 'human':
+                        print(f"👤 Пользователь: {content}")
+                        print("-" * 40)
+                    
+                    # 2. Сообщения от ИИ
+                    elif msg_type == 'ai':
+                        # Проверяем наличие вызовов инструментов
+                        tool_calls = getattr(msg, 'tool_calls', [])
+                        
+                        if tool_calls:
+                            step_counter += 1
+                            print(f"🤖 Шаг {step_counter}: Агент использует инструменты")
+                            
+                            # Размышления агента (если есть)
+                            if content and content.strip():
+                                print(f"💭 Размышления: {content}")
+                            
+                            # Детали каждого вызова инструмента
+                            for i, tool_call in enumerate(tool_calls, 1):
+                                # Парсим tool_call в зависимости от формата
+                                if isinstance(tool_call, dict):
+                                    tool_name = tool_call.get('name', 'unknown')
+                                    tool_args = tool_call.get('args', {})
+                                    tool_id = tool_call.get('id', 'unknown')
+                                else:
+                                    # Если это объект с атрибутами
+                                    tool_name = getattr(tool_call, 'name', 'unknown')
+                                    tool_args = getattr(tool_call, 'args', {})
+                                    tool_id = getattr(tool_call, 'id', 'unknown')
+                                
+                                print(f"🔧 Инструмент {i}: {tool_name}")
+                                print(f"   📥 Параметры: {tool_args}")
+                                print(f"   🆔 ID: {tool_id}")
+                            print("-" * 40)
+                        
+                        # Финальный ответ (без tool_calls)
+                        elif content and content.strip():
+                            print(f"🎉 Финальный ответ:")
+                            print(f"💬 {content}")
+                            print("-" * 40)
+                    
+                    # 3. Результаты выполнения инструментов
+                    elif msg_type == 'tool':
+                        tool_name = getattr(msg, 'name', 'unknown')
+                        tool_call_id = getattr(msg, 'tool_call_id', 'unknown')
+                        print(f"📤 Результат инструмента: {tool_name}")
+                        print(f"   🆔 Call ID: {tool_call_id}")
+                        
+                        # Форматируем результат
+                        if content:
+                            # Пытаемся распарсить JSON для красивого вывода
+                            try:
+                                import json
+                                if content.strip().startswith(('{', '[')):
+                                    parsed = json.loads(content)
+                                    formatted = json.dumps(parsed, indent=2, ensure_ascii=False)
+                                    print(f"   📊 Результат:")
+                                    for line in formatted.split('\n'):
+                                        print(f"     {line}")
+                                else:
+                                    print(f"   📊 Результат: {content}")
+                            except:
+                                print(f"   📊 Результат: {content}")
+                        print("-" * 40)
+                    
+                    # 4. Другие типы сообщений (для отладки)
+                    else:
+                        if content:
+                            print(f"❓ Неизвестный тип ({msg_type}): {content[:100]}...")
+                            print("-" * 40)
+    
+    except Exception as e:
+        print(f"❌ Ошибка при выполнении запроса: {e}")
+        print(f"📊 Выполнено шагов: {step_counter}")
+        raise
+    
+    print("=" * 80)
+    print("✅ Запрос обработан")
+    print()
 
+async def main():
+    all_tools = await get_all_tools()
 
-# def write_markdown_file(content, output_dir, base_filename):
-#     os.makedirs(output_dir, exist_ok=True)
-#     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-#     file_path = os.path.join(output_dir, f"{base_filename}_{timestamp}.md")
-#     with open(file_path, 'w', encoding='utf-8') as f:
-#         f.write(content)
-#     print(f"[✅] Saved to {file_path}")
-
-
-# 🚀 Основной код
-def main():
     parser = argparse.ArgumentParser(description="Summarize PDF chapter to Obsidian.")
-    parser.add_argument("--file", required=True, help="Path to the PDF file.")
-    parser.add_argument("--pages", required=True, help="Page range to process (e.g., 43-58).")
-    parser.add_argument("--out", required=True, help="Output directory for Obsidian.")
+    # parser.add_argument("--file", required=True, help="Path to the PDF file.")
+    # parser.add_argument("--pages", required=True, help="Page range to process (e.g., 43-58).")
+    # parser.add_argument("--out", required=True, help="Output directory for Obsidian.")
+    parser.add_argument("--query", required=True, help="Output directory for Obsidian.")
 
     args = parser.parse_args()
-    start_page, end_page = map(int, args.pages.split('-'))
+    # start_page, end_page = map(int, args.pages.split('-'))
+    userQuery = args.query
 
-    print(f"[1/5] Extracting pages {start_page}-{end_page} from {args.file}...")
-    raw_text = asyncio.run(extract_text_via_mcp(args.file, start_page, end_page))
-
-    print(f"[2/5] Reading summarization rules from {rules_path}...")
+    print(f"[1] Reading summarization rules from {rules_path}...")
     with open(rules_path, "r", encoding="utf-8") as f:
         rules_text = f.read()
     
-    print(f"[3/5] Reading summarization rules from {style_path}...")
+    print(f"[2] Reading summarization rules from {style_path}...")
     with open(style_path, "r", encoding="utf-8") as f:
         style_text = f.read()
 
-    print("[4/5] Summarizing content via LLM...")
-    summarized = summarize_text(raw_text, rules_text, style_text)
+    prompt = f"""
+        You are a professional technical specialist and technical writer helping a developer study new technologies and write summaries in Markdown format.
+        
+        IMPORTANT INSTRUCTIONS:
+        1. When asked to summarize PDF content, use the ebook-mcp tools to read the PDF pages
+        2. Extract text from the specified page range
+        3. Create a well-structured summary following the rules below
+        4. Write the summary to a file in the output directory
+        5. Provide a final response confirming completion
+        
+        Follow these summarization rules strictly:
+        <rules>
+        {rules_text}
+        </rules>
 
-    print("[5/5] Saving to Obsidian vault...")
-    formatted = format_to_markdown(summarized)
-    write_markdown_file(formatted, args.out, "summary.md")
+        Summarize the content in a clear, structured Markdown format.
+        Use the following style guidelines:
+        <style_guidelines>
+        {style_text}
+        </style_guidelines>
+        
+        Always provide a clear, final response when your task is complete.
+        """
 
-    print("✅ Done.")
+    # OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    # client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
+    gpt4_model = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.4,
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
+
+    # gpt4_model=OpenAI(
+    #         model="gpt-4o-mini",
+    #         temperature=0.4,
+    #         api_key=os.getenv("OPENAI_API_KEY")
+    # )
+
+    # Создаем агента с инструментами и промптом
+    print("[3] Creating agent with tools and prompt...")
+
+    agent = create_react_agent(
+        model=gpt4_model,
+        tools=all_tools,
+        prompt=prompt
+    )
+
+    print("[4] Summarizing content via LLM...")
+    # await run_query(agent, f"Summarize the content of the PDF file {args.file} from pages {start_page} to {end_page}.")
+    await run_query(agent, userQuery)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

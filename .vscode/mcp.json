@@ -13,6 +13,16 @@
         "OBSIDIAN_PORT": "27124"
       }
     },
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+     },
+    "context7": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
     "ebook-mcp":{
       "type": "stdio",
       "command": "uv",
